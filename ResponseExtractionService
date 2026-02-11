@@ -1,0 +1,222 @@
+package com.novaflow.action.service;
+
+import java.io.StringReader;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathFactory;
+
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+import org.w3c.dom.Document;
+import org.xml.sax.InputSource;
+
+import com.jayway.jsonpath.JsonPath;
+import com.jayway.jsonpath.PathNotFoundException;
+import com.novaflow.action.dto.request.ExtractionRule;
+import com.novaflow.action.dto.request.ExtractionRule.ExtractionSource;
+import com.novaflow.action.dto.request.ExtractionRule.MaskType;
+import com.novaflow.action.dto.request.ResponseHandlingConfig;
+import com.novaflow.action.exception.ActionException;
+
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@Service
+public class ResponseExtractionService {
+
+    public Map<String, Object> extract(ResponseHandlingConfig config, int status, 
+                                        Map<String, String> headers, String body) {
+        Map<String, Object> result = new HashMap<>();
+        
+        if (config == null || config.getExtract() == null || config.getExtract().isEmpty()) {
+            return result;
+        }
+
+        for (ExtractionRule rule : config.getExtract()) {
+            try {
+                Object value = extractValue(rule, status, headers, body);
+                
+                if (value != null) {
+                    value = applyMask(value, rule.getMask());
+                }
+                
+                if (value == null && rule.getDefaultValue() != null) {
+                    value = rule.getDefaultValue();
+                }
+                
+                if (value == null && rule.isRequired()) {
+                    throw new ActionException("EXTRACTION_REQUIRED_MISSING", 
+                        "Required extraction '" + rule.getName() + "' yielded no value");
+                }
+                
+                if (value != null) {
+                    result.put(rule.getName(), value);
+                }
+                
+            } catch (ActionException e) {
+                if (config.getOnParseError() == ResponseHandlingConfig.ParseErrorAction.FAIL) {
+                    throw e;
+                }
+                log.warn("Extraction failed for '{}': {}", rule.getName(), e.getMessage());
+            } catch (Exception e) {
+                if (config.getOnParseError() == ResponseHandlingConfig.ParseErrorAction.FAIL) {
+                    throw new ActionException("EXTRACTION_FAILED", 
+                        "Extraction failed for '" + rule.getName() + "': " + e.getMessage());
+                }
+                log.warn("Extraction failed for '{}': {}", rule.getName(), e.getMessage());
+            }
+        }
+
+        return result;
+    }
+
+    private Object extractValue(ExtractionRule rule, int status, Map<String, String> headers, String body) {
+        return switch (rule.getFrom()) {
+            case STATUS -> status;
+            case HEADER -> extractFromHeader(rule, headers);
+            case BODY -> extractFromBody(rule, body);
+        };
+    }
+
+    private Object extractFromHeader(ExtractionRule rule, Map<String, String> headers) {
+        if (!StringUtils.hasText(rule.getHeaderName())) {
+            throw new ActionException("EXTRACTION_HEADER_MISSING", 
+                "header_name is required for HEADER extraction");
+        }
+        
+        String value = headers.get(rule.getHeaderName());
+        if (value == null) {
+            value = headers.entrySet().stream()
+                .filter(e -> e.getKey().equalsIgnoreCase(rule.getHeaderName()))
+                .map(Map.Entry::getValue)
+                .findFirst()
+                .orElse(null);
+        }
+        
+        if (value != null && StringUtils.hasText(rule.getRegex())) {
+            value = applyRegex(value, rule.getRegex());
+        }
+        
+        return value;
+    }
+
+    private Object extractFromBody(ExtractionRule rule, String body) {
+        if (!StringUtils.hasText(body)) {
+            return null;
+        }
+
+        return switch (rule.getFormat()) {
+            case JSON -> extractJsonPath(body, rule.getJsonPath());
+            case XML -> extractXPath(body, rule.getXPath());
+            case TEXT -> extractRegex(body, rule.getRegex());
+        };
+    }
+
+    private Object extractJsonPath(String json, String jsonPath) {
+        if (!StringUtils.hasText(jsonPath)) {
+            throw new ActionException("EXTRACTION_JSONPATH_MISSING", 
+                "json_path is required for JSON extraction");
+        }
+        
+        try {
+            return JsonPath.read(json, jsonPath);
+        } catch (PathNotFoundException e) {
+            log.debug("JSONPath not found: {}", jsonPath);
+            return null;
+        } catch (Exception e) {
+            throw new ActionException("EXTRACTION_JSONPATH_FAILED", 
+                "JSONPath extraction failed: " + e.getMessage());
+        }
+    }
+
+    private Object extractXPath(String xml, String xPathExpr) {
+        if (!StringUtils.hasText(xPathExpr)) {
+            throw new ActionException("EXTRACTION_XPATH_MISSING", 
+                "x_path is required for XML extraction");
+        }
+        
+        try {
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            
+            DocumentBuilder builder = factory.newDocumentBuilder();
+            Document doc = builder.parse(new InputSource(new StringReader(xml)));
+            
+            XPath xpath = XPathFactory.newInstance().newXPath();
+            return xpath.evaluate(xPathExpr, doc, XPathConstants.STRING);
+            
+        } catch (Exception e) {
+            throw new ActionException("EXTRACTION_XPATH_FAILED", 
+                "XPath extraction failed: " + e.getMessage());
+        }
+    }
+
+    private String extractRegex(String text, String regex) {
+        if (!StringUtils.hasText(regex)) {
+            throw new ActionException("EXTRACTION_REGEX_MISSING", 
+                "regex is required for TEXT extraction");
+        }
+        
+        try {
+            Pattern pattern = Pattern.compile(regex);
+            Matcher matcher = pattern.matcher(text);
+            
+            if (matcher.find()) {
+                return matcher.groupCount() > 0 ? matcher.group(1) : matcher.group();
+            }
+            return null;
+            
+        } catch (Exception e) {
+            throw new ActionException("EXTRACTION_REGEX_FAILED", 
+                "Regex extraction failed: " + e.getMessage());
+        }
+    }
+
+    private String applyRegex(String value, String regex) {
+        try {
+            Pattern pattern = Pattern.compile(regex);
+            Matcher matcher = pattern.matcher(value);
+            
+            if (matcher.find()) {
+                return matcher.groupCount() > 0 ? matcher.group(1) : matcher.group();
+            }
+            return value;
+            
+        } catch (Exception e) {
+            log.warn("Regex application failed: {}", e.getMessage());
+            return value;
+        }
+    }
+
+    private Object applyMask(Object value, MaskType maskType) {
+        if (value == null || maskType == null || maskType == MaskType.NONE) {
+            return value;
+        }
+        
+        String strValue = value.toString();
+        
+        return switch (maskType) {
+            case PARTIAL -> maskPartial(strValue);
+            case FULL -> "***MASKED***";
+            default -> value;
+        };
+    }
+
+    private String maskPartial(String value) {
+        if (value.length() <= 4) {
+            return "***";
+        }
+        int showChars = Math.min(4, value.length() / 4);
+        return value.substring(0, showChars) + "***" + value.substring(value.length() - showChars);
+    }
+}
