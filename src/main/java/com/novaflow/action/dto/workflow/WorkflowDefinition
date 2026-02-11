@@ -1,0 +1,45 @@
+package com.novaflow.action.dto.workflow;
+
+import java.util.List;
+import java.util.Map;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.Size;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class WorkflowDefinition {
+
+    @NotBlank
+    private String id;
+
+    @NotBlank
+    private String name;
+
+    @Builder.Default
+    private String version = "1.0";
+
+    private String description;
+
+    @JsonProperty("inputs")
+    private Map<String, Object> inputs;
+
+    @NotEmpty
+    @Valid
+    @Size(min = 1, max = 20)
+    private List<StepDefinition> steps;
+
+    @JsonProperty("timeout_sec")
+    @Builder.Default
+    private int timeoutSec = 300;
+}
