@@ -1,0 +1,81 @@
+package com.novaflow.action.dto.request;
+
+import java.util.Map;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ApiConfig {
+
+    @NotBlank(message = "url is required")
+    @JsonProperty("url")
+    private String url;
+
+    @NotNull(message = "method is required")
+    @JsonProperty("method")
+    private HttpMethod method;
+
+    @JsonProperty("headers")
+    private Map<String, String> headers;
+
+    @JsonProperty("query")
+    private Map<String, String> query;
+
+    @JsonProperty("payload")
+    private Object payload;
+
+    @JsonProperty("payload_text")
+    private String payloadText;
+
+    @JsonProperty("payload_type")
+    @Builder.Default
+    private PayloadType payloadType = PayloadType.NONE;
+
+    @JsonProperty("bearer_token")
+    private String bearerToken;
+
+    @Valid
+    @JsonProperty("basic_auth")
+    private BasicAuthConfig basicAuth;
+
+    @JsonProperty("credential_ref")
+    private String credentialRef;
+
+    @JsonProperty("batch_size")
+    @Builder.Default
+    private int batchSize = 1000;
+
+    @JsonProperty("request_timeout_sec")
+    @Builder.Default
+    private int requestTimeoutSec = 30;
+
+    @JsonProperty("include_correlation_id")
+    @Builder.Default
+    private boolean includeCorrelationId = true;
+
+    @JsonProperty("include_asof_date")
+    @Builder.Default
+    private boolean includeAsofDate = false;
+
+    @JsonProperty("asof_date")
+    private String asofDate;
+
+    public enum HttpMethod {
+        GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+    }
+
+    public enum PayloadType {
+        NONE, JSON, TEXT, FORM_URLENCODED, MULTIPART_FORM, FILE_BYTES
+    }
+}
