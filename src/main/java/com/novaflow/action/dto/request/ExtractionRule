@@ -1,0 +1,63 @@
+package com.novaflow.action.dto.request;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import jakarta.validation.constraints.NotBlank;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ExtractionRule {
+
+    @NotBlank(message = "extraction name is required")
+    @JsonProperty("name")
+    private String name;
+
+    @JsonProperty("from")
+    @Builder.Default
+    private ExtractionSource from = ExtractionSource.BODY;
+
+    @JsonProperty("format")
+    @Builder.Default
+    private ResponseFormat format = ResponseFormat.JSON;
+
+    @JsonProperty("json_path")
+    private String jsonPath;
+
+    @JsonProperty("x_path")
+    private String xPath;
+
+    @JsonProperty("regex")
+    private String regex;
+
+    @JsonProperty("header_name")
+    private String headerName;
+
+    @JsonProperty("required")
+    @Builder.Default
+    private boolean required = false;
+
+    @JsonProperty("default_value")
+    private String defaultValue;
+
+    @JsonProperty("mask")
+    @Builder.Default
+    private MaskType mask = MaskType.NONE;
+
+    public enum ExtractionSource {
+        BODY, HEADER, STATUS
+    }
+
+    public enum ResponseFormat {
+        JSON, XML, TEXT
+    }
+
+    public enum MaskType {
+        NONE, PARTIAL, FULL
+    }
+}
