@@ -1,0 +1,42 @@
+package com.novaflow.action.dto.request;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ActionRequest {
+
+    @Valid
+    @JsonProperty("request")
+    private RequestMeta request;
+
+    @Valid
+    @NotNull(message = "api configuration is required")
+    @JsonProperty("api")
+    private ApiConfig api;
+
+    @Valid
+    @JsonProperty("auth_config")
+    private AuthConfig authConfig;
+
+    @Valid
+    @JsonProperty("file_input")
+    private FileInputConfig fileInput;
+
+    @Valid
+    @JsonProperty("file_output")
+    private FileOutputConfig fileOutput;
+
+    @Valid
+    @JsonProperty("response_handling")
+    private ResponseHandlingConfig responseHandling;
+}
