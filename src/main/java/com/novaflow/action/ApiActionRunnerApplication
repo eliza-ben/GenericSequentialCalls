@@ -1,0 +1,16 @@
+package com.novaflow.action;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+
+import com.novaflow.action.config.ActionProperties;
+
+@SpringBootApplication
+@EnableConfigurationProperties(ActionProperties.class)
+public class ApiActionRunnerApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ApiActionRunnerApplication.class, args);
+    }
+}
