@@ -1,0 +1,36 @@
+package com.novaflow.action.dto.response;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@JsonInclude(JsonInclude.Include.NON_NULL)
+public class ResponseBody {
+
+    @JsonProperty("mode")
+    private BodyMode mode;
+
+    @JsonProperty("json")
+    private Object json;
+
+    @JsonProperty("text")
+    private String text;
+
+    @JsonProperty("base64")
+    private String base64;
+
+    @JsonProperty("saved_file")
+    private SavedFileInfo savedFile;
+
+    public enum BodyMode {
+        JSON, TEXT, BASE64, OMITTED_TOO_LARGE, STREAMED_TO_FILE
+    }
+}
