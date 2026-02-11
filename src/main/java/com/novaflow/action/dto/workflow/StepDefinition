@@ -1,0 +1,67 @@
+package com.novaflow.action.dto.workflow;
+
+import java.util.List;
+import java.util.Map;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import jakarta.validation.constraints.NotBlank;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class StepDefinition {
+
+    @NotBlank
+    private String id;
+
+    @NotBlank
+    private String name;
+
+    @JsonProperty("action_request")
+    private Map<String, Object> actionRequest;
+
+    @JsonProperty("extract")
+    private List<VariableExtraction> extract;
+
+    @JsonProperty("on_error")
+    @Builder.Default
+    private OnErrorAction onError = OnErrorAction.FAIL;
+
+    @JsonProperty("retry_count")
+    @Builder.Default
+    private int retryCount = 0;
+
+    @JsonProperty("retry_delay_ms")
+    @Builder.Default
+    private int retryDelayMs = 1000;
+
+    @JsonProperty("skip_if")
+    private String skipIf;
+
+    public enum OnErrorAction {
+        FAIL, CONTINUE, RETRY
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class VariableExtraction {
+        @NotBlank
+        private String name;
+
+        @JsonProperty("json_path")
+        private String jsonPath;
+
+        private String header;
+
+        @JsonProperty("default")
+        private Object defaultValue;
+    }
+}
