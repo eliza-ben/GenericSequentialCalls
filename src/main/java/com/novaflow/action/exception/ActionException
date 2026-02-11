@@ -1,0 +1,19 @@
+package com.novaflow.action.exception;
+
+import lombok.Getter;
+
+@Getter
+public class ActionException extends RuntimeException {
+
+    private final String code;
+
+    public ActionException(String code, String message) {
+        super(message);
+        this.code = code;
+    }
+
+    public ActionException(String code, String message, Throwable cause) {
+        super(message, cause);
+        this.code = code;
+    }
+}
