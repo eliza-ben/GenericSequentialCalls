@@ -1,0 +1,196 @@
+package com.novaflow.action.service;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Service;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.util.StringUtils;
+import org.springframework.web.reactive.function.BodyInserters;
+import org.springframework.web.reactive.function.client.WebClient;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.novaflow.action.config.ActionProperties;
+import com.novaflow.action.dto.request.AuthConfig;
+import com.novaflow.action.dto.response.TokenCallInfo;
+import com.novaflow.action.exception.ActionException;
+
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Mono;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class OAuthTokenService {
+
+    private final WebClient.Builder webClientBuilder;
+    private final ActionProperties properties;
+    private final OutboundSecurityService securityService;
+
+    private final Map<CacheKey, CachedToken> tokenCache = new ConcurrentHashMap<>();
+
+    public record TokenResult(String accessToken, TokenCallInfo tokenCallInfo) {}
+
+    public Mono<TokenResult> getToken(AuthConfig authConfig, int timeoutSec) {
+        if (authConfig == null || authConfig.getType() != AuthConfig.AuthType.OAUTH) {
+            return Mono.just(new TokenResult(null, TokenCallInfo.builder()
+                .used(false)
+                .build()));
+        }
+
+        String tokenUrl = authConfig.getTokenUrl();
+        String clientId = resolveClientId(authConfig);
+        String clientSecret = resolveClientSecret(authConfig);
+        String scope = authConfig.getScope();
+        String audience = authConfig.getAudience();
+
+        if (!StringUtils.hasText(tokenUrl) || !StringUtils.hasText(clientId) || !StringUtils.hasText(clientSecret)) {
+            return Mono.error(new ActionException("OAUTH_CONFIG_INVALID", 
+                "OAuth configuration requires token_url, client_id, and client_secret"));
+        }
+
+        securityService.validateUrl(tokenUrl);
+
+        CacheKey cacheKey = new CacheKey(tokenUrl, clientId, scope, audience);
+        
+        if (properties.getOauth().isCacheEnabled()) {
+            CachedToken cached = tokenCache.get(cacheKey);
+            if (cached != null && !cached.isExpired(properties.getOauth().getCacheSkewSeconds())) {
+                log.debug("Using cached OAuth token for client_id: {}", maskClientId(clientId));
+                return Mono.just(new TokenResult(cached.getAccessToken(), TokenCallInfo.builder()
+                    .used(true)
+                    .cached(true)
+                    .expiresIn(cached.getRemainingSeconds())
+                    .build()));
+            }
+        }
+
+        return fetchNewToken(authConfig, tokenUrl, clientId, clientSecret, scope, audience, timeoutSec, cacheKey);
+    }
+
+    private Mono<TokenResult> fetchNewToken(AuthConfig authConfig, String tokenUrl, String clientId, 
+                                            String clientSecret, String scope, String audience, 
+                                            int timeoutSec, CacheKey cacheKey) {
+        log.info("Fetching new OAuth token from: {}", tokenUrl);
+
+        MultiValueMap<String, String> formData = new LinkedMultiValueMap<>();
+        formData.add("grant_type", authConfig.getGrantType() != null ? authConfig.getGrantType() : "client_credentials");
+        formData.add("client_id", clientId);
+        formData.add("client_secret", clientSecret);
+        
+        if (StringUtils.hasText(scope)) {
+            formData.add("scope", scope);
+        }
+        if (StringUtils.hasText(audience)) {
+            formData.add("audience", audience);
+        }
+
+        long startTime = System.currentTimeMillis();
+
+        return webClientBuilder.build()
+            .post()
+            .uri(tokenUrl)
+            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+            .body(BodyInserters.fromFormData(formData))
+            .retrieve()
+            .bodyToMono(JsonNode.class)
+            .timeout(Duration.ofSeconds(timeoutSec))
+            .map(response -> {
+                long durationMs = System.currentTimeMillis() - startTime;
+                log.debug("OAuth token fetched in {}ms", durationMs);
+
+                String accessToken = response.path("access_token").asText(null);
+                int expiresIn = response.path("expires_in").asInt(3600);
+
+                if (!StringUtils.hasText(accessToken)) {
+                    throw new ActionException("OAUTH_TOKEN_MISSING", "OAuth response missing access_token");
+                }
+
+                if (properties.getOauth().isCacheEnabled()) {
+                    tokenCache.put(cacheKey, new CachedToken(accessToken, expiresIn));
+                }
+
+                return new TokenResult(accessToken, TokenCallInfo.builder()
+                    .used(true)
+                    .status(200)
+                    .expiresIn(expiresIn)
+                    .cached(false)
+                    .build());
+            })
+            .onErrorMap(ex -> {
+                if (ex instanceof ActionException) {
+                    return ex;
+                }
+                log.error("OAuth token fetch failed: {}", ex.getMessage());
+                return new ActionException("OAUTH_FETCH_FAILED", "Failed to fetch OAuth token: " + ex.getMessage());
+            });
+    }
+
+    private String resolveClientId(AuthConfig authConfig) {
+        return authConfig.getClientId();
+    }
+
+    private String resolveClientSecret(AuthConfig authConfig) {
+        return authConfig.getClientSecret();
+    }
+
+    private String maskClientId(String clientId) {
+        if (clientId == null || clientId.length() < 8) {
+            return "***";
+        }
+        return clientId.substring(0, 4) + "***";
+    }
+
+    @Data
+    private static class CacheKey {
+        private final String tokenUrl;
+        private final String clientId;
+        private final String scope;
+        private final String audience;
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            CacheKey cacheKey = (CacheKey) o;
+            return Objects.equals(tokenUrl, cacheKey.tokenUrl) &&
+                   Objects.equals(clientId, cacheKey.clientId) &&
+                   Objects.equals(scope, cacheKey.scope) &&
+                   Objects.equals(audience, cacheKey.audience);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(tokenUrl, clientId, scope, audience);
+        }
+    }
+
+    @Data
+    private static class CachedToken {
+        private final String accessToken;
+        private final Instant expiresAt;
+        private final int originalExpiresIn;
+
+        public CachedToken(String accessToken, int expiresIn) {
+            this.accessToken = accessToken;
+            this.originalExpiresIn = expiresIn;
+            this.expiresAt = Instant.now().plusSeconds(expiresIn);
+        }
+
+        public boolean isExpired(int skewSeconds) {
+            return Instant.now().plusSeconds(skewSeconds).isAfter(expiresAt);
+        }
+
+        public int getRemainingSeconds() {
+            long remaining = Duration.between(Instant.now(), expiresAt).getSeconds();
+            return (int) Math.max(0, remaining);
+        }
+    }
+}
