@@ -1,0 +1,46 @@
+package com.novaflow.action.controller;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.novaflow.action.dto.request.ActionRequest;
+import com.novaflow.action.dto.response.ActionResponse;
+import com.novaflow.action.service.ActionExecutorService;
+
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Mono;
+
+@Slf4j
+@RestController
+@RequestMapping("/api/action")
+@RequiredArgsConstructor
+@Validated
+public class ActionController {
+
+    private final ActionExecutorService executorService;
+
+    @PostMapping("/execute")
+    public Mono<ResponseEntity<ActionResponse>> execute(@Valid @RequestBody ActionRequest request) {
+        log.debug("Received action execution request");
+        return executorService.execute(request)
+            .map(response -> {
+                if (response.isSuccess()) {
+                    return ResponseEntity.ok(response);
+                } else {
+                    return ResponseEntity.badRequest().body(response);
+                }
+            });
+    }
+
+    @GetMapping("/health")
+    public Mono<ResponseEntity<String>> health() {
+        return Mono.just(ResponseEntity.ok("{\"status\":\"UP\"}"));
+    }
+}
