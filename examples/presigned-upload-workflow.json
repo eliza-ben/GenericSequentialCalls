@@ -1,0 +1,211 @@
+{
+  "workflow": {
+    "id": "presigned-upload-invoice",
+    "name": "Presigned URL Upload with Invoice Creation",
+    "version": "1.0",
+    "description": "5-step workflow: Get presigned URL, upload file, check status, create invoice, get final status",
+    "inputs": {
+      "filename": "invoice-data.csv",
+      "file_base_dir": "DATA_IN"
+    },
+    "steps": [
+      {
+        "id": "step1-get-presigned-url",
+        "name": "Get Presigned Upload URL",
+        "action_request": {
+          "request": {
+            "correlation_id": "${correlation_id}"
+          },
+          "api": {
+            "url": "https://api.example.com/storage/presigned-url",
+            "method": "POST",
+            "payload_type": "JSON",
+            "payload": {
+              "action": "upload",
+              "content_type": "text/csv"
+            },
+            "request_timeout_sec": 30
+          },
+          "auth_config": {
+            "type": "oauth",
+            "token_url": "https://auth.example.com/oauth/token",
+            "client_id": "${oauth_client_id}",
+            "client_secret": "${oauth_client_secret}",
+            "grant_type": "client_credentials",
+            "scope": "storage:write"
+          }
+        },
+        "extract": [
+          {
+            "name": "presigned_url",
+            "json_path": "$.data.upload_url"
+          },
+          {
+            "name": "request_id",
+            "json_path": "$.data.request_id"
+          },
+          {
+            "name": "storage_key",
+            "json_path": "$.data.storage_key"
+          }
+        ],
+        "on_error": "FAIL"
+      },
+      {
+        "id": "step2-upload-file",
+        "name": "Upload File to Presigned URL",
+        "action_request": {
+          "request": {
+            "correlation_id": "${correlation_id}"
+          },
+          "api": {
+            "url": "${presigned_url}",
+            "method": "PUT",
+            "payload_type": "FILE_BYTES",
+            "headers": {
+              "Content-Type": "text/csv"
+            },
+            "request_timeout_sec": 120
+          },
+          "file_input": {
+            "mode": "LOCAL_PATH",
+            "base_dir_key": "${file_base_dir}",
+            "path": "${filename}",
+            "content_type": "text/csv"
+          }
+        },
+        "extract": [
+          {
+            "name": "upload_etag",
+            "header": "ETag"
+          }
+        ],
+        "on_error": "FAIL",
+        "retry_count": 2,
+        "retry_delay_ms": 2000
+      },
+      {
+        "id": "step3-check-upload-status",
+        "name": "Check Upload Processing Status",
+        "action_request": {
+          "request": {
+            "correlation_id": "${correlation_id}"
+          },
+          "api": {
+            "url": "https://api.example.com/storage/status/${request_id}",
+            "method": "GET",
+            "payload_type": "NONE",
+            "request_timeout_sec": 30
+          },
+          "auth_config": {
+            "type": "oauth",
+            "token_url": "https://auth.example.com/oauth/token",
+            "client_id": "${oauth_client_id}",
+            "client_secret": "${oauth_client_secret}",
+            "grant_type": "client_credentials",
+            "scope": "storage:read"
+          }
+        },
+        "extract": [
+          {
+            "name": "upload_status",
+            "json_path": "$.status"
+          },
+          {
+            "name": "file_url",
+            "json_path": "$.data.file_url"
+          },
+          {
+            "name": "file_size",
+            "json_path": "$.data.file_size"
+          }
+        ],
+        "on_error": "FAIL"
+      },
+      {
+        "id": "step4-create-invoice",
+        "name": "Create Invoice with Uploaded File",
+        "action_request": {
+          "request": {
+            "correlation_id": "${correlation_id}"
+          },
+          "api": {
+            "url": "https://api.example.com/invoices",
+            "method": "POST",
+            "payload_type": "JSON",
+            "payload": {
+              "filename": "${filename}",
+              "storage_key": "${storage_key}",
+              "file_url": "${file_url}",
+              "file_size": "${file_size}",
+              "source": "automated-upload"
+            },
+            "request_timeout_sec": 30
+          },
+          "auth_config": {
+            "type": "oauth",
+            "token_url": "https://auth.example.com/oauth/token",
+            "client_id": "${oauth_client_id}",
+            "client_secret": "${oauth_client_secret}",
+            "grant_type": "client_credentials",
+            "scope": "invoices:write"
+          }
+        },
+        "extract": [
+          {
+            "name": "invoice_id",
+            "json_path": "$.data.invoice_id"
+          },
+          {
+            "name": "invoice_status",
+            "json_path": "$.data.status"
+          }
+        ],
+        "on_error": "FAIL"
+      },
+      {
+        "id": "step5-get-final-status",
+        "name": "Get Final Invoice Status",
+        "action_request": {
+          "request": {
+            "correlation_id": "${correlation_id}"
+          },
+          "api": {
+            "url": "https://api.example.com/invoices/${invoice_id}/status",
+            "method": "GET",
+            "payload_type": "NONE",
+            "request_timeout_sec": 30
+          },
+          "auth_config": {
+            "type": "oauth",
+            "token_url": "https://auth.example.com/oauth/token",
+            "client_id": "${oauth_client_id}",
+            "client_secret": "${oauth_client_secret}",
+            "grant_type": "client_credentials",
+            "scope": "invoices:read"
+          }
+        },
+        "extract": [
+          {
+            "name": "final_status",
+            "json_path": "$.data.status"
+          },
+          {
+            "name": "invoice_url",
+            "json_path": "$.data.invoice_url"
+          }
+        ],
+        "on_error": "CONTINUE"
+      }
+    ],
+    "timeout_sec": 300
+  },
+  "inputs": {
+    "correlation_id": "workflow-upload-001",
+    "filename": "invoice-data.csv",
+    "file_base_dir": "DATA_IN",
+    "oauth_client_id": "your-client-id",
+    "oauth_client_secret": "your-client-secret"
+  },
+  "dry_run": false
+}
