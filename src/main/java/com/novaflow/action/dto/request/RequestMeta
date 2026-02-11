@@ -1,0 +1,22 @@
+package com.novaflow.action.dto.request;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class RequestMeta {
+
+    @JsonProperty("correlation_id")
+    private String correlationId;
+
+    @JsonProperty("dry_run")
+    @Builder.Default
+    private boolean dryRun = false;
+}
