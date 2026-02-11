@@ -1,0 +1,49 @@
+package com.novaflow.action.dto.request;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class AuthConfig {
+
+    @JsonProperty("type")
+    @Builder.Default
+    private AuthType type = AuthType.NONE;
+
+    @JsonProperty("token_url")
+    private String tokenUrl;
+
+    @JsonProperty("client_id")
+    private String clientId;
+
+    @JsonProperty("client_secret")
+    private String clientSecret;
+
+    @JsonProperty("scope")
+    private String scope;
+
+    @JsonProperty("grant_type")
+    @Builder.Default
+    private String grantType = "client_credentials";
+
+    @JsonProperty("audience")
+    private String audience;
+
+    @JsonProperty("refresh_interval_sec")
+    @Builder.Default
+    private int refreshIntervalSec = 900;
+
+    public enum AuthType {
+        @JsonProperty("none")
+        NONE,
+        @JsonProperty("oauth")
+        OAUTH
+    }
+}
