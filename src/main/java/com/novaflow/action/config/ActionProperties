@@ -1,0 +1,63 @@
+package com.novaflow.action.config;
+
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import lombok.Data;
+
+@Data
+@ConfigurationProperties(prefix = "action")
+public class ActionProperties {
+
+    private Security security = new Security();
+    private OAuth oauth = new OAuth();
+    private Limits limits = new Limits();
+    private Map<String, String> baseDirs = new HashMap<>();
+    private Map<String, CredentialEntry> credentials = new HashMap<>();
+
+    @Data
+    public static class Security {
+        private SecurityMode mode = SecurityMode.BEARER_TOKEN;
+        private Set<String> allowedHosts = new HashSet<>();
+        private Set<String> allowedMethods = Set.of("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS");
+        private Set<String> blockedHeaderPrefixes = Set.of("x-forwarded", "x-real-ip");
+        private String jwtIssuerUri;
+        private String jwtAudience;
+        private String basicUsername;
+        private String basicPassword;
+        private String bearerToken;
+    }
+
+    @Data
+    public static class OAuth {
+        private boolean cacheEnabled = false;
+        private int cacheSkewSeconds = 30;
+        private int defaultTimeoutSec = 30;
+    }
+
+    @Data
+    public static class Limits {
+        private long maxResponseBytes = 104857600L; // 100 MB default
+        private long maxRequestBytes = 104857600L;  // 100 MB default
+        private int defaultTimeoutSec = 30;
+        private int maxTimeoutSec = 300;
+    }
+
+    @Data
+    public static class CredentialEntry {
+        private String clientId;
+        private String clientSecret;
+        private String username;
+        private String password;
+    }
+
+    public enum SecurityMode {
+        BASIC,
+        BEARER_TOKEN,
+        JWT_RESOURCE_SERVER
+    }
+}
