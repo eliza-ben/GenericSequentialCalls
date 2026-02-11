@@ -1,0 +1,45 @@
+package com.novaflow.action.dto.response;
+
+import java.time.Instant;
+import java.util.Map;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ActionResponse {
+
+    @JsonProperty("request_id")
+    private String requestId;
+
+    @JsonProperty("timestamp")
+    private Instant timestamp;
+
+    @JsonProperty("success")
+    private boolean success;
+
+    @JsonProperty("correlation_id")
+    private String correlationId;
+
+    @JsonProperty("error")
+    private ErrorInfo error;
+
+    @JsonProperty("token_call")
+    private TokenCallInfo tokenCall;
+
+    @JsonProperty("raw_response")
+    private RawResponse rawResponse;
+
+    @JsonProperty("parsed_output")
+    private Map<String, Object> parsedOutput;
+
+    @JsonProperty("metrics")
+    private Metrics metrics;
+}
