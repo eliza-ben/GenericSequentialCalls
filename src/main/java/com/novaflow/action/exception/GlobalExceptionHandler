@@ -1,0 +1,141 @@
+package com.novaflow.action.exception;
+
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+
+import com.novaflow.action.dto.response.ActionResponse;
+import com.novaflow.action.dto.response.ErrorInfo;
+
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ActionException.class)
+    public ResponseEntity<ActionResponse> handleActionException(ActionException ex) {
+        log.warn("Action error [{}]: {}", ex.getCode(), ex.getMessage());
+        
+        ActionResponse response = ActionResponse.builder()
+            .requestId(UUID.randomUUID().toString())
+            .timestamp(Instant.now())
+            .success(false)
+            .error(ErrorInfo.builder()
+                .code(ex.getCode())
+                .message(ex.getMessage())
+                .build())
+            .build();
+
+        HttpStatus status = mapCodeToStatus(ex.getCode());
+        return ResponseEntity.status(status).body(response);
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ActionResponse> handleValidationException(MethodArgumentNotValidException ex) {
+        Map<String, String> errors = new HashMap<>();
+        ex.getBindingResult().getAllErrors().forEach(error -> {
+            String fieldName = ((FieldError) error).getField();
+            String errorMessage = error.getDefaultMessage();
+            errors.put(fieldName, errorMessage);
+        });
+
+        String details = errors.toString();
+        log.warn("Validation error: {}", details);
+
+        ActionResponse response = ActionResponse.builder()
+            .requestId(UUID.randomUUID().toString())
+            .timestamp(Instant.now())
+            .success(false)
+            .error(ErrorInfo.builder()
+                .code("VALIDATION_ERROR")
+                .message("Request validation failed")
+                .details(details)
+                .build())
+            .build();
+
+        return ResponseEntity.badRequest().body(response);
+    }
+
+    @ExceptionHandler(WebClientRequestException.class)
+    public ResponseEntity<ActionResponse> handleWebClientRequestException(WebClientRequestException ex) {
+        log.error("WebClient request error: {}", ex.getMessage());
+        
+        ActionResponse response = ActionResponse.builder()
+            .requestId(UUID.randomUUID().toString())
+            .timestamp(Instant.now())
+            .success(false)
+            .error(ErrorInfo.builder()
+                .code("REQUEST_FAILED")
+                .message("Failed to connect to target: " + ex.getMessage())
+                .build())
+            .build();
+
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(response);
+    }
+
+    @ExceptionHandler(WebClientResponseException.class)
+    public ResponseEntity<ActionResponse> handleWebClientResponseException(WebClientResponseException ex) {
+        log.error("WebClient response error: {} - {}", ex.getStatusCode(), ex.getMessage());
+        
+        ActionResponse response = ActionResponse.builder()
+            .requestId(UUID.randomUUID().toString())
+            .timestamp(Instant.now())
+            .success(false)
+            .error(ErrorInfo.builder()
+                .code("TARGET_ERROR")
+                .message("Target returned error: " + ex.getStatusCode())
+                .details(ex.getResponseBodyAsString())
+                .build())
+            .build();
+
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(response);
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ActionResponse> handleGenericException(Exception ex) {
+        log.error("Unexpected error", ex);
+        
+        ActionResponse response = ActionResponse.builder()
+            .requestId(UUID.randomUUID().toString())
+            .timestamp(Instant.now())
+            .success(false)
+            .error(ErrorInfo.builder()
+                .code("INTERNAL_ERROR")
+                .message("An unexpected error occurred")
+                .details(ex.getMessage())
+                .build())
+            .build();
+
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+    }
+
+    private HttpStatus mapCodeToStatus(String code) {
+        if (code == null) {
+            return HttpStatus.INTERNAL_SERVER_ERROR;
+        }
+        
+        return switch (code) {
+            case "VALIDATION_ERROR", "URL_INVALID", "URL_EMPTY", "URL_SCHEME_INVALID",
+                 "URL_HOST_MISSING", "FILE_PATH_MISSING", "FILE_BASEDIR_MISSING",
+                 "OAUTH_CONFIG_INVALID", "EXTRACTION_REQUIRED_MISSING" -> HttpStatus.BAD_REQUEST;
+            case "HOST_BLOCKED", "HOST_NOT_ALLOWED", "METHOD_NOT_ALLOWED", 
+                 "FILE_PATH_TRAVERSAL" -> HttpStatus.FORBIDDEN;
+            case "FILE_NOT_FOUND" -> HttpStatus.NOT_FOUND;
+            case "FILE_EXISTS" -> HttpStatus.CONFLICT;
+            case "OAUTH_FETCH_FAILED", "REQUEST_FAILED" -> HttpStatus.BAD_GATEWAY;
+            case "TIMEOUT" -> HttpStatus.GATEWAY_TIMEOUT;
+            default -> HttpStatus.INTERNAL_SERVER_ERROR;
+        };
+    }
+}
