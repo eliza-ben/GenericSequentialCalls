@@ -1,0 +1,24 @@
+package com.novaflow.action.dto.response;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class SavedFileInfo {
+
+    @JsonProperty("base_dir_key")
+    private String baseDirKey;
+
+    @JsonProperty("path")
+    private String path;
+
+    @JsonProperty("size_bytes")
+    private Long sizeBytes;
+}
