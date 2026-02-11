@@ -1,0 +1,206 @@
+package com.novaflow.action.service;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.util.Base64;
+
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+import com.novaflow.action.config.ActionProperties;
+import com.novaflow.action.dto.request.FileInputConfig;
+import com.novaflow.action.dto.request.FileOutputConfig;
+import com.novaflow.action.dto.response.SavedFileInfo;
+import com.novaflow.action.exception.ActionException;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class FileService {
+
+    private final ActionProperties properties;
+
+    public record FileContent(byte[] bytes, String filename, String contentType) {}
+
+    public Mono<FileContent> loadFileInput(FileInputConfig config) {
+        if (config == null || config.getMode() == FileInputConfig.FileInputMode.NONE) {
+            return Mono.empty();
+        }
+
+        return switch (config.getMode()) {
+            case LOCAL_PATH -> loadFromLocalPath(config);
+            case INLINE_BASE64 -> loadFromBase64(config);
+            case MULTIPART -> Mono.error(new ActionException("FILE_MODE_UNSUPPORTED", 
+                "MULTIPART mode is handled separately in request building"));
+            default -> Mono.empty();
+        };
+    }
+
+    private Mono<FileContent> loadFromLocalPath(FileInputConfig config) {
+        return Mono.fromCallable(() -> {
+            Path filePath = resolveAndValidatePath(config.getBaseDirKey(), config.getPath());
+            
+            if (!Files.exists(filePath)) {
+                throw new ActionException("FILE_NOT_FOUND", "File not found: " + config.getPath());
+            }
+            
+            if (!Files.isReadable(filePath)) {
+                throw new ActionException("FILE_NOT_READABLE", "File is not readable: " + config.getPath());
+            }
+
+            byte[] bytes = Files.readAllBytes(filePath);
+            String filename = config.getFilename() != null ? config.getFilename() : filePath.getFileName().toString();
+            String contentType = config.getContentType() != null ? config.getContentType() : 
+                Files.probeContentType(filePath);
+            
+            log.debug("Loaded file: {}, size: {} bytes", filename, bytes.length);
+            return new FileContent(bytes, filename, contentType);
+        });
+    }
+
+    private Mono<FileContent> loadFromBase64(FileInputConfig config) {
+        return Mono.fromCallable(() -> {
+            if (!StringUtils.hasText(config.getBase64())) {
+                throw new ActionException("FILE_BASE64_EMPTY", "Base64 content is empty");
+            }
+            
+            byte[] bytes;
+            try {
+                bytes = Base64.getDecoder().decode(config.getBase64());
+            } catch (IllegalArgumentException e) {
+                throw new ActionException("FILE_BASE64_INVALID", "Invalid Base64 encoding");
+            }
+            
+            String filename = config.getFilename() != null ? config.getFilename() : "file.bin";
+            String contentType = config.getContentType() != null ? config.getContentType() : "application/octet-stream";
+            
+            log.debug("Decoded Base64 file: {}, size: {} bytes", filename, bytes.length);
+            return new FileContent(bytes, filename, contentType);
+        });
+    }
+
+    public Mono<SavedFileInfo> saveToFile(FileOutputConfig config, Flux<DataBuffer> dataBufferFlux) {
+        if (config == null || config.getMode() == FileOutputConfig.FileOutputMode.NONE) {
+            return Mono.empty();
+        }
+
+        return Mono.fromCallable(() -> {
+            Path filePath = resolveAndValidatePath(config.getBaseDirKey(), config.getPath());
+            
+            if (Files.exists(filePath) && !config.isOverwrite()) {
+                throw new ActionException("FILE_EXISTS", "File already exists and overwrite is false: " + config.getPath());
+            }
+
+            Files.createDirectories(filePath.getParent());
+            return filePath;
+        })
+        .flatMap(filePath -> streamToFile(filePath, dataBufferFlux, config));
+    }
+
+    public Mono<SavedFileInfo> saveToFile(FileOutputConfig config, byte[] content) {
+        if (config == null || config.getMode() == FileOutputConfig.FileOutputMode.NONE) {
+            return Mono.empty();
+        }
+
+        return Mono.fromCallable(() -> {
+            Path filePath = resolveAndValidatePath(config.getBaseDirKey(), config.getPath());
+            
+            if (Files.exists(filePath) && !config.isOverwrite()) {
+                throw new ActionException("FILE_EXISTS", "File already exists and overwrite is false: " + config.getPath());
+            }
+
+            Files.createDirectories(filePath.getParent());
+            Files.write(filePath, content, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            
+            log.info("Saved file: {}, size: {} bytes", filePath, content.length);
+            
+            return SavedFileInfo.builder()
+                .baseDirKey(config.getBaseDirKey())
+                .path(config.getPath())
+                .sizeBytes((long) content.length)
+                .build();
+        });
+    }
+
+    private Mono<SavedFileInfo> streamToFile(Path filePath, Flux<DataBuffer> dataBufferFlux, FileOutputConfig config) {
+        return Mono.using(
+            () -> Files.newOutputStream(filePath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING),
+            outputStream -> writeDataBuffers(outputStream, dataBufferFlux)
+                .then(Mono.fromCallable(() -> {
+                    long size = Files.size(filePath);
+                    log.info("Streamed file: {}, size: {} bytes", filePath, size);
+                    return SavedFileInfo.builder()
+                        .baseDirKey(config.getBaseDirKey())
+                        .path(config.getPath())
+                        .sizeBytes(size)
+                        .build();
+                })),
+            outputStream -> {
+                try {
+                    outputStream.close();
+                } catch (IOException e) {
+                    log.warn("Error closing output stream", e);
+                }
+            }
+        );
+    }
+
+    private Mono<Void> writeDataBuffers(OutputStream outputStream, Flux<DataBuffer> dataBufferFlux) {
+        return dataBufferFlux
+            .doOnNext(dataBuffer -> {
+                try {
+                    byte[] bytes = new byte[dataBuffer.readableByteCount()];
+                    dataBuffer.read(bytes);
+                    outputStream.write(bytes);
+                } catch (IOException e) {
+                    throw new RuntimeException("Error writing to file", e);
+                } finally {
+                    DataBufferUtils.release(dataBuffer);
+                }
+            })
+            .then();
+    }
+
+    private Path resolveAndValidatePath(String baseDirKey, String relativePath) {
+        if (!StringUtils.hasText(baseDirKey)) {
+            throw new ActionException("FILE_BASEDIR_MISSING", "base_dir_key is required for file operations");
+        }
+
+        String baseDir = properties.getBaseDirs().get(baseDirKey);
+        if (!StringUtils.hasText(baseDir)) {
+            throw new ActionException("FILE_BASEDIR_UNKNOWN", 
+                "Unknown base_dir_key: " + baseDirKey + ". Configure it in action.base-dirs");
+        }
+
+        if (!StringUtils.hasText(relativePath)) {
+            throw new ActionException("FILE_PATH_MISSING", "File path is required");
+        }
+
+        Path basePath = Paths.get(baseDir).toAbsolutePath().normalize();
+        Path fullPath = basePath.resolve(relativePath).normalize();
+
+        if (!fullPath.startsWith(basePath)) {
+            throw new ActionException("FILE_PATH_TRAVERSAL", 
+                "Path traversal detected. Path must stay within base directory");
+        }
+
+        return fullPath;
+    }
+
+    public InputStream getFileInputStream(FileInputConfig config) throws IOException {
+        Path filePath = resolveAndValidatePath(config.getBaseDirKey(), config.getPath());
+        return Files.newInputStream(filePath);
+    }
+}
