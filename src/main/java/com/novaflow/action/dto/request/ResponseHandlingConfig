@@ -1,0 +1,34 @@
+package com.novaflow.action.dto.request;
+
+import java.util.List;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import jakarta.validation.Valid;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ResponseHandlingConfig {
+
+    @JsonProperty("parse")
+    @Builder.Default
+    private boolean parse = true;
+
+    @JsonProperty("on_parse_error")
+    @Builder.Default
+    private ParseErrorAction onParseError = ParseErrorAction.FAIL;
+
+    @Valid
+    @JsonProperty("extract")
+    private List<ExtractionRule> extract;
+
+    public enum ParseErrorAction {
+        FAIL, IGNORE
+    }
+}
