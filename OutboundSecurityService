@@ -1,0 +1,162 @@
+package com.novaflow.action.service;
+
+import java.net.InetAddress;
+import java.net.URI;
+import java.net.UnknownHostException;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
+import com.novaflow.action.config.ActionProperties;
+import com.novaflow.action.dto.request.ApiConfig.HttpMethod;
+import com.novaflow.action.exception.ActionException;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class OutboundSecurityService {
+
+    private final ActionProperties properties;
+
+    private static final Set<String> FORBIDDEN_HEADERS = Set.of(
+        "host", "content-length", "connection", "transfer-encoding",
+        "keep-alive", "proxy-authenticate", "proxy-authorization",
+        "te", "trailer", "upgrade"
+    );
+
+    private static final Pattern PRIVATE_IP_PATTERN = Pattern.compile(
+        "^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|0\\.|169\\.254\\.|fc00:|fd00:|fe80:|::1)"
+    );
+
+    private static final Set<String> METADATA_IPS = Set.of(
+        "169.254.169.254",
+        "metadata.google.internal",
+        "169.254.170.2"
+    );
+
+    public void validateUrl(String urlString) {
+        if (!StringUtils.hasText(urlString)) {
+            throw new ActionException("URL_EMPTY", "URL cannot be empty");
+        }
+
+        URI uri;
+        try {
+            uri = URI.create(urlString);
+        } catch (IllegalArgumentException e) {
+            throw new ActionException("URL_INVALID", "Invalid URL format: " + urlString);
+        }
+
+        String scheme = uri.getScheme();
+        if (scheme == null || (!scheme.equalsIgnoreCase("http") && !scheme.equalsIgnoreCase("https"))) {
+            throw new ActionException("URL_SCHEME_INVALID", "Only HTTP and HTTPS schemes are allowed");
+        }
+
+        String host = uri.getHost();
+        if (!StringUtils.hasText(host)) {
+            throw new ActionException("URL_HOST_MISSING", "URL must have a host");
+        }
+
+        validateHost(host);
+    }
+
+    public void validateHost(String host) {
+        if (isBlockedHost(host)) {
+            throw new ActionException("HOST_BLOCKED", "Access to host is blocked: " + host);
+        }
+
+        Set<String> allowedHosts = properties.getSecurity().getAllowedHosts();
+        if (allowedHosts != null && !allowedHosts.isEmpty()) {
+            boolean allowed = allowedHosts.stream()
+                .anyMatch(pattern -> matchesHostPattern(host, pattern));
+            
+            if (!allowed) {
+                throw new ActionException("HOST_NOT_ALLOWED", 
+                    "Host is not in the allowlist: " + host);
+            }
+        }
+
+        try {
+            InetAddress[] addresses = InetAddress.getAllByName(host);
+            for (InetAddress addr : addresses) {
+                String ip = addr.getHostAddress();
+                if (isPrivateOrLocalIp(ip)) {
+                    throw new ActionException("HOST_BLOCKED", 
+                        "Host resolves to blocked IP range: " + host);
+                }
+            }
+        } catch (UnknownHostException e) {
+            log.warn("Unable to resolve host for SSRF check: {}", host);
+        }
+    }
+
+    public void validateMethod(HttpMethod method) {
+        Set<String> allowedMethods = properties.getSecurity().getAllowedMethods();
+        if (allowedMethods != null && !allowedMethods.isEmpty()) {
+            if (!allowedMethods.contains(method.name())) {
+                throw new ActionException("METHOD_NOT_ALLOWED", 
+                    "HTTP method is not allowed: " + method);
+            }
+        }
+    }
+
+    public boolean isHeaderForbidden(String headerName) {
+        if (headerName == null) {
+            return true;
+        }
+        String lower = headerName.toLowerCase();
+        
+        if (FORBIDDEN_HEADERS.contains(lower)) {
+            return true;
+        }
+        
+        Set<String> blockedPrefixes = properties.getSecurity().getBlockedHeaderPrefixes();
+        if (blockedPrefixes != null) {
+            for (String prefix : blockedPrefixes) {
+                if (lower.startsWith(prefix.toLowerCase())) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    private boolean isBlockedHost(String host) {
+        String lower = host.toLowerCase();
+        
+        if (lower.equals("localhost") || lower.equals("127.0.0.1") || lower.equals("::1")) {
+            return true;
+        }
+        
+        if (METADATA_IPS.contains(lower)) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    private boolean isPrivateOrLocalIp(String ip) {
+        if (ip == null) {
+            return false;
+        }
+        
+        if (METADATA_IPS.contains(ip)) {
+            return true;
+        }
+        
+        return PRIVATE_IP_PATTERN.matcher(ip).find();
+    }
+
+    private boolean matchesHostPattern(String host, String pattern) {
+        if (pattern.startsWith("*.")) {
+            String suffix = pattern.substring(1);
+            return host.endsWith(suffix) || host.equals(pattern.substring(2));
+        }
+        return host.equalsIgnoreCase(pattern);
+    }
+}
