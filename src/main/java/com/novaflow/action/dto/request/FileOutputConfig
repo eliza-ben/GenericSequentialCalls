@@ -1,0 +1,33 @@
+package com.novaflow.action.dto.request;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class FileOutputConfig {
+
+    @JsonProperty("mode")
+    @Builder.Default
+    private FileOutputMode mode = FileOutputMode.NONE;
+
+    @JsonProperty("base_dir_key")
+    private String baseDirKey;
+
+    @JsonProperty("path")
+    private String path;
+
+    @JsonProperty("overwrite")
+    @Builder.Default
+    private boolean overwrite = false;
+
+    public enum FileOutputMode {
+        NONE, STREAM_TO_FILE
+    }
+}
