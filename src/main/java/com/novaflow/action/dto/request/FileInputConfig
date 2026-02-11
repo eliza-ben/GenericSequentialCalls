@@ -1,0 +1,38 @@
+package com.novaflow.action.dto.request;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class FileInputConfig {
+
+    @JsonProperty("mode")
+    @Builder.Default
+    private FileInputMode mode = FileInputMode.NONE;
+
+    @JsonProperty("base_dir_key")
+    private String baseDirKey;
+
+    @JsonProperty("path")
+    private String path;
+
+    @JsonProperty("filename")
+    private String filename;
+
+    @JsonProperty("content_type")
+    private String contentType;
+
+    @JsonProperty("base64")
+    private String base64;
+
+    public enum FileInputMode {
+        NONE, LOCAL_PATH, MULTIPART, INLINE_BASE64
+    }
+}
