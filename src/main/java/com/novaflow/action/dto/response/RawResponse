@@ -1,0 +1,26 @@
+package com.novaflow.action.dto.response;
+
+import java.util.Map;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class RawResponse {
+
+    @JsonProperty("status")
+    private int status;
+
+    @JsonProperty("headers")
+    private Map<String, String> headers;
+
+    @JsonProperty("body")
+    private ResponseBody body;
+}
