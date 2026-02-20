@@ -1,0 +1,318 @@
+{
+    "workflow": {
+        "id": "fee-invoice-upload",
+        "name": "Fee Invoice Upload (Password Grant + Presigned PUT + Create Invoice + Poll)",
+        "version": "1.0",
+        "description": "Step1 get presigned URL, Step2 upload to S3, Step3 update status, Step4 create invoice, Step5 poll final status",
+        "inputs": {
+            "correlation_id": "fee-upload-001",
+            "api_base_url": "https://sandboxapp.oncentrl.net/WebService",
+            "step1_path": "/file",
+            "step3_path": "/file/upload/status",
+            "step4_path": "/bulkRequest",
+            "step5_path": "/util/pendingAPI",
+            "base_dir_key": "DATA_IN",
+            "file_rel_path": "Bank_of_New_York_Sub_Custody_NT_j1.xlsx",
+            "filename": "Bank_of_New_York_Sub_Custody_NT_j1.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "content_md5": "ogMAWCIhPz5dj8NIXztaTg==",
+            "content_md5_encoded": "OgMAWCUhPz5dj8NJXztaTg%3D%3D",
+
+            "file_length": 126932,
+            "auto_duplicate_file": true,
+            "partner_id": 319990,
+            "poll_max_attempts": 30,
+            "poll_sleep_ms": 2000,
+            "oauth_type": "oauth",
+            "oauth_token_url": "https://sandboxauth.oncentrl.net/Authorization/oauth/token",
+            "oauth_client_id": "7b5a38705d7b3562655925406a652e32",
+            "oauth_client_secret": "655f523128212d6e70634446224c2a48",
+            "oauth_grant_type": "password",
+            "oauth_username": "api-user-sandbox2@firstcitizens-uat.com",
+            "oauth_password": "h40NZy$1b2a2Q0q"
+        },
+        "steps": [
+            {
+                "id": "step1-get-presigned-url",
+                "name": "Step1 - Get Presigned Upload URL",
+                "action_request": {
+                    "request": {
+                        "correlation_id": "${correlation_id}"
+                    },
+                    "api": {
+                        "url": "${api_base_url}${step1_path}",
+                        "method": "POST",
+                        "payload_type": "FILE_BYTES",
+                        "encode_query_params": false,
+                        "query": {
+                            "fileName": "${filename}",
+                            "contentMD5": "${content_md5}",
+                            "fileLength": "${file_length}",
+                            "autoDuplicateFile": "${auto_duplicate_file}"
+                        },
+                        "headers": {
+                            "Cache-Control": "no-cache",
+                            "Content-Type": "${content_type}"
+                        },
+                        "request_timeout_sec": 60
+                    },
+                    "auth_config": {
+                        "type": "${oauth_type}",
+                        "token_url": "${oauth_token_url}",
+                        "client_id": "${oauth_client_id}",
+                        "client_secret": "${oauth_client_secret}",
+                        "grant_type": "${oauth_grant_type}",
+                        "username": "${oauth_username}",
+                        "password": "${oauth_password}"
+                    },
+                    "file_input": {
+                        "mode": "LOCAL_PATH",
+                        "base_dir_key": "${base_dir_key}",
+                        "path": "${file_rel_path}",
+                        "content_type": "${content_type}"
+                    }
+                },
+                "extract": [
+                    {
+                        "name": "message_type_step1",
+                        "json_path": "$.messageType"
+                    },
+                    {
+                        "name": "generated_id",
+                        "json_path": "$.generatedId"
+                    },
+                    {
+                        "name": "presigned_url",
+                        "json_path": "$.data[0].preSignedURL"
+                    },
+                    {
+                        "name": "file_version_id",
+                        "json_path": "$.data[0].fileVersionId"
+                    },
+                    {
+                        "name": "new_file_name",
+                        "json_path": "$.data[0].newFileName"
+                    }
+                ],
+                "assert": [
+                    {
+                        "type": "equals_ignore_case",
+                        "left": "${message_type_step1}",
+                        "right": "SUCCESS"
+                    },
+                    {
+                        "type": "not_blank",
+                        "value": "${presigned_url}"
+                    },
+                    {
+                        "type": "not_blank",
+                        "value": "${file_version_id}"
+                    }
+                ],
+                "on_error": "FAIL"
+            },
+            {
+                "id": "step2-upload-file-to-s3",
+                "name": "Step2 - Upload File to S3 (Presigned PUT)",
+                "executor_type": "HTTPCLIENT",
+                "action_request": {
+                    "api": {
+                        "url": "${presigned_url}",
+                        "method": "PUT",
+                        "payload_type": "FILE_BYTES",
+                        "presigned_url": true,
+                        "headers": {
+                            "Content-MD5": "${content_md5}"
+                        },
+                        "request_timeout_sec": 120
+                    },
+                    "file_input": {
+                        "mode": "LOCAL_PATH",
+                        "base_dir_key": "${base_dir_key}",
+                        "path": "${file_rel_path}",
+                        "content_type": "${content_type}"
+                    }
+                },
+                "extract": [
+                    {
+                        "name": "upload_etag",
+                        "header": "ETag"
+                    }
+                ],
+                "retry_count": 2,
+                "retry_delay_ms": 2000,
+                "on_error": "FAIL"
+            },
+            {
+                "id": "step3-update-upload-status",
+                "name": "Step3 - Update Upload Status",
+                "action_request": {
+                    "request": {
+                        "correlation_id": "${correlation_id}"
+                    },
+                    "api": {
+                        "url": "${api_base_url}${step3_path}",
+                        "method": "PUT",
+                        "payload_type": "NONE",
+                        "encode_query_params": true,
+                        "query": {
+                            "fileId": "${generated_id}",
+                            "fileVersionId": "${file_version_id}"
+                        },
+                        "headers": {
+                            "Cache-Control": "no-cache",
+                            "Accept": "application/json"
+                        },
+                        "request_timeout_sec": 60
+                    },
+                    "auth_config": {
+                        "type": "${oauth_type}",
+                        "token_url": "${oauth_token_url}",
+                        "client_id": "${oauth_client_id}",
+                        "client_secret": "${oauth_client_secret}",
+                        "grant_type": "${oauth_grant_type}",
+                        "username": "${oauth_username}",
+                        "password": "${oauth_password}"
+                    }
+                },
+                "extract": [
+                    {
+                        "name": "message_type_step3",
+                        "json_path": "$.messageType"
+                    }
+                ],
+                "assert": [
+                    {
+                        "type": "equals_ignore_case",
+                        "left": "${message_type_step3}",
+                        "right": "SUCCESS"
+                    }
+                ],
+                "on_error": "FAIL"
+            },
+            {
+                "id": "step4-create-invoice",
+                "name": "Step4 - Create Invoice",
+                "action_request": {
+                    "request": {
+                        "correlation_id": "${correlation_id}"
+                    },
+                    "api": {
+                        "url": "${api_base_url}${step4_path}",
+                        "method": "POST",
+                        "payload_type": "JSON",
+                        "headers": {
+                            "Cache-Control": "no-cache",
+                            "Content-Type": "application/json",
+                            "Accept": "application/json"
+                        },
+                        "payload": {
+                            "actionType": "UPLOAD",
+                            "entityType": "INVOICE",
+                            "requests": [
+                                {
+                                    "genericFormat": true,
+                                    "fileVersionId": "${file_version_id}",
+                                    "partnerId": "${partner_id}",
+                                    "fileName": "${file_name}"
+                                }
+                            ]
+                        },
+                        "request_timeout_sec": 60
+                    },
+                    "auth_config": {
+                        "type": "${oauth_type}",
+                        "token_url": "${oauth_token_url}",
+                        "client_id": "${oauth_client_id}",
+                        "client_secret": "${oauth_client_secret}",
+                        "grant_type": "${oauth_grant_type}",
+                        "username": "${oauth_username}",
+                        "password": "${oauth_password}"
+                    }
+                },
+                "extract": [
+                    {
+                        "name": "message_type_step4",
+                        "json_path": "$.messageType"
+                    },
+                    {
+                        "name": "invoiceUploadId",
+                        "json_path": "$.message"
+                    }
+                ],
+                "assert": [
+                    {
+                        "type": "not_blank",
+                        "value": "${invoiceUploadId}"
+                    }
+                ],
+                "on_error": "FAIL"
+            },
+            {
+                "id": "step5-poll-status",
+                "name": "Step5 - Poll Until SUCCESS",
+                "type": "POLL",
+                "poll": {
+                    "max_attempts": "${poll_max_attempts}",
+                    "sleep_ms": "${poll_sleep_ms}",
+                    "stop_when": {
+                        "type": "equals_ignore_case",
+                        "left": "${poll_message_type}",
+                        "right": "SUCCESS"
+                    }
+                },
+                "action_request": {
+                    "request": {
+                        "correlation_id": "${correlation_id}"
+                    },
+                    "api": {
+                        "url": "${api_base_url}${step5_path}",
+                        "method": "GET",
+                        "payload_type": "NONE",
+                        "query": {
+                            "uuid": "${invoiceUploadId}"
+                        },
+                        "headers": {
+                            "Cache-Control": "no-cache",
+                            "Accept": "application/json"
+                        },
+                        "request_timeout_sec": 60
+                    },
+                    "auth_config": {
+                        "type": "${oauth_type}",
+                        "token_url": "${oauth_token_url}",
+                        "client_id": "${oauth_client_id}",
+                        "client_secret": "${oauth_client_secret}",
+                        "grant_type": "${oauth_grant_type}",
+                        "username": "${oauth_username}",
+                        "password": "${oauth_password}"
+                    }
+                },
+                "extract": [
+                    {
+                        "name": "poll_message_type",
+                        "json_path": "$.messageType"
+                    },
+                    {
+                        "name": "status_count_map",
+                        "json_path": "$.data[0].statusCountMap"
+                    }
+                ],
+                "on_stop": [
+                    {
+                        "type": "fail_if",
+                        "condition": {
+                            "type": "gt",
+                            "left": "${status_count_map.ERROR}",
+                            "right": 1
+                        },
+                        "message": "Finished with ERROR > 0"
+                    }
+                ],
+                "on_error": "FAIL"
+            }
+        ],
+        "timeout_sec": 300
+    },
+    "dry_run": false
+}
