@@ -1,0 +1,9 @@
+package com.novaflow.action.service;
+
+import com.novaflow.action.dto.request.ActionRequest;
+import com.novaflow.action.dto.response.ActionResponse;
+import reactor.core.publisher.Mono;
+
+public interface ActionExecutor {
+    Mono<ActionResponse> execute(ActionRequest request);
+}
