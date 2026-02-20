@@ -1,5 +1,6 @@
 package com.novaflow.action.service;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -9,64 +10,79 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.JsonPath;
 import com.novaflow.action.dto.request.ActionRequest;
 import com.novaflow.action.dto.response.ActionResponse;
+import com.novaflow.action.dto.response.ResponseBody;
 import com.novaflow.action.dto.workflow.StepDefinition;
+import com.novaflow.action.dto.workflow.StepDefinition.ExecutorType;
 import com.novaflow.action.dto.workflow.StepResult;
 import com.novaflow.action.dto.workflow.WorkflowDefinition;
 import com.novaflow.action.dto.workflow.WorkflowRequest;
 import com.novaflow.action.dto.workflow.WorkflowResult;
 
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import lombok.extern.Slf4j;
 import reactor.core.publisher.Mono;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class WorkflowExecutorService {
 
     private static final Pattern VARIABLE_PATTERN = Pattern.compile("\\$\\{([^}]+)}");
 
-    private final ActionExecutorService actionExecutorService;
+    private final ActionExecutor webClientExecutor;
+    private final ActionExecutor httpClientExecutor;
     private final ObjectMapper objectMapper;
 
+    public WorkflowExecutorService(
+            @Qualifier("webClientExecutor") ActionExecutor webClientExecutor,
+            @Qualifier("httpClientExecutor") ActionExecutor httpClientExecutor,
+            ObjectMapper objectMapper) {
+        this.webClientExecutor = webClientExecutor;
+        this.httpClientExecutor = httpClientExecutor;
+        this.objectMapper = objectMapper;
+    }
+
+    // -------------------------------------------------------------------------
+    // Entry point
+    // -------------------------------------------------------------------------
+
     public Mono<WorkflowResult> execute(WorkflowRequest request) {
-        String correlationId = StringUtils.hasText(request.getCorrelationId()) 
-            ? request.getCorrelationId() 
-            : UUID.randomUUID().toString();
-        
+        String correlationId = StringUtils.hasText(request.getCorrelationId())
+                ? request.getCorrelationId()
+                : UUID.randomUUID().toString();
+
         WorkflowDefinition workflow = request.getWorkflow();
         long startTime = System.currentTimeMillis();
 
-        log.info("Starting workflow execution: {} [{}] correlation: {}", 
-            workflow.getName(), workflow.getId(), correlationId);
+        log.info("Starting workflow: {} [{}] correlation: {}",
+                workflow.getName(), workflow.getId(), correlationId);
 
         Map<String, Object> variables = new HashMap<>();
-        if (workflow.getInputs() != null) {
-            variables.putAll(workflow.getInputs());
-        }
-        if (request.getInputs() != null) {
-            variables.putAll(request.getInputs());
-        }
+        if (workflow.getInputs() != null) variables.putAll(workflow.getInputs());
+        if (request.getInputs() != null) variables.putAll(request.getInputs());
 
         List<StepResult> stepResults = new ArrayList<>();
 
         return executeStepsSequentially(workflow.getSteps(), variables, stepResults, correlationId, request.isDryRun())
-            .map(success -> buildResult(workflow, correlationId, startTime, success, variables, stepResults))
-            .onErrorResume(ex -> {
-                log.error("Workflow execution failed: {}", ex.getMessage());
-                return Mono.just(buildErrorResult(workflow, correlationId, startTime, ex.getMessage(), stepResults, variables));
-            });
+                .map(success -> buildResult(workflow, correlationId, startTime, success, variables, stepResults))
+                .onErrorResume(ex -> {
+                    log.error("Workflow failed unexpectedly: {}", ex.getMessage());
+                    return Mono.just(buildErrorResult(workflow, correlationId, startTime,
+                            ex.getMessage(), stepResults, variables));
+                });
     }
 
-    private Mono<Boolean> executeStepsSequentially(List<StepDefinition> steps, 
+    // -------------------------------------------------------------------------
+    // Sequential step execution
+    // -------------------------------------------------------------------------
+
+    private Mono<Boolean> executeStepsSequentially(List<StepDefinition> steps,
                                                     Map<String, Object> variables,
                                                     List<StepResult> stepResults,
                                                     String correlationId,
@@ -75,88 +91,143 @@ public class WorkflowExecutorService {
             return Mono.just(true);
         }
 
-        return executeStep(steps.get(0), variables, correlationId, dryRun)
-            .flatMap(stepResult -> {
-                stepResults.add(stepResult);
+        StepDefinition current = steps.get(0);
 
-                if (!stepResult.isSuccess() && !stepResult.isSkipped()) {
-                    StepDefinition step = steps.get(0);
-                    if (step.getOnError() == StepDefinition.OnErrorAction.FAIL) {
-                        log.error("Step {} failed, aborting workflow", step.getId());
-                        return Mono.just(false);
+        return executeStep(current, variables, correlationId, dryRun)
+                .flatMap(stepResult -> {
+                    stepResults.add(stepResult);
+
+                    // Propagate extracted variables for subsequent steps
+                    if (stepResult.getExtractedVariables() != null) {
+                        variables.putAll(stepResult.getExtractedVariables());
                     }
-                }
 
-                if (stepResult.getExtractedVariables() != null) {
-                    variables.putAll(stepResult.getExtractedVariables());
-                }
+                    // Handle step failure
+                    if (!stepResult.isSuccess() && !stepResult.isSkipped()) {
+                        StepDefinition.OnErrorAction onError = current.getOnError() != null
+                                ? current.getOnError()
+                                : StepDefinition.OnErrorAction.FAIL;
 
-                if (steps.size() > 1) {
-                    return executeStepsSequentially(steps.subList(1, steps.size()), variables, stepResults, correlationId, dryRun);
-                }
-                return Mono.just(true);
-            });
+                        switch (onError) {
+                            case FAIL -> {
+                                log.error("Step {} failed with FAIL policy — aborting workflow", current.getId());
+                                return Mono.just(false);
+                            }
+                            case CONTINUE -> {
+                                log.warn("Step {} failed with CONTINUE policy — proceeding", current.getId());
+                            }
+                            case SKIP_REMAINING -> {
+                                log.warn("Step {} failed with SKIP_REMAINING — stopping execution", current.getId());
+                                return Mono.just(false);
+                            }
+                        }
+                    }
+
+                    if (steps.size() > 1) {
+                        return executeStepsSequentially(steps.subList(1, steps.size()),
+                                variables, stepResults, correlationId, dryRun);
+                    }
+                    return Mono.just(true);
+                });
     }
 
-    private Mono<StepResult> executeStep(StepDefinition step, Map<String, Object> variables, 
+    // -------------------------------------------------------------------------
+    // Single step execution
+    // -------------------------------------------------------------------------
+
+    private Mono<StepResult> executeStep(StepDefinition step, Map<String, Object> variables,
                                           String correlationId, boolean dryRun) {
         long stepStart = System.currentTimeMillis();
-        log.info("Executing step: {} [{}]", step.getName(), step.getId());
+        log.info("Executing step: {} [{}] executor: {}",
+                step.getName(), step.getId(),
+                step.getExecutorType() != null ? step.getExecutorType() : ExecutorType.WEBCLIENT);
 
+        // Skip condition
         if (StringUtils.hasText(step.getSkipIf())) {
             String condition = resolveVariables(step.getSkipIf(), variables);
             if (evaluateCondition(condition)) {
-                log.info("Skipping step {} due to condition: {}", step.getId(), step.getSkipIf());
+                log.info("Skipping step {} — condition matched: {}", step.getId(), step.getSkipIf());
                 return Mono.just(StepResult.builder()
-                    .stepId(step.getId())
-                    .stepName(step.getName())
-                    .success(true)
-                    .skipped(true)
-                    .durationMs(System.currentTimeMillis() - stepStart)
-                    .build());
+                        .stepId(step.getId())
+                        .stepName(step.getName())
+                        .success(true)
+                        .skipped(true)
+                        .durationMs(System.currentTimeMillis() - stepStart)
+                        .build());
             }
         }
 
+        // Resolve and deserialize ActionRequest
+        ActionRequest actionRequest;
         try {
             String actionRequestJson = objectMapper.writeValueAsString(step.getActionRequest());
             String resolvedJson = resolveVariables(actionRequestJson, variables);
-            
-            ActionRequest actionRequest = objectMapper.readValue(resolvedJson, ActionRequest.class);
-            
+            actionRequest = objectMapper.readValue(resolvedJson, ActionRequest.class);
+
             if (actionRequest.getRequest() != null) {
                 actionRequest.getRequest().setCorrelationId(correlationId);
                 actionRequest.getRequest().setDryRun(dryRun);
             }
-
-            return executeWithRetry(actionRequest, step.getRetryCount(), step.getRetryDelayMs())
-                .map(response -> buildStepResult(step, stepStart, response, variables));
-
         } catch (Exception e) {
             log.error("Failed to prepare step {}: {}", step.getId(), e.getMessage());
             return Mono.just(StepResult.builder()
-                .stepId(step.getId())
-                .stepName(step.getName())
-                .success(false)
-                .error("Failed to prepare request: " + e.getMessage())
-                .durationMs(System.currentTimeMillis() - stepStart)
-                .build());
+                    .stepId(step.getId())
+                    .stepName(step.getName())
+                    .success(false)
+                    .error("Failed to prepare request: " + e.getMessage())
+                    .durationMs(System.currentTimeMillis() - stepStart)
+                    .build());
         }
+
+        ActionExecutor executor = resolveExecutor(step);
+
+        return executeWithRetry(executor, actionRequest, step.getRetryCount(), step.getRetryDelayMs())
+                .map(response -> buildStepResult(step, stepStart, response));
     }
 
-    private Mono<ActionResponse> executeWithRetry(ActionRequest request, int retryCount, int retryDelayMs) {
-        return actionExecutorService.execute(request)
-            .flatMap(response -> {
-                if (!response.isSuccess() && retryCount > 0) {
-                    log.warn("Step failed, retrying... ({} attempts left)", retryCount);
-                    return Mono.delay(java.time.Duration.ofMillis(retryDelayMs))
-                        .flatMap(tick -> executeWithRetry(request, retryCount - 1, retryDelayMs));
-                }
-                return Mono.just(response);
-            });
+    // -------------------------------------------------------------------------
+    // Executor routing
+    // -------------------------------------------------------------------------
+
+    private ActionExecutor resolveExecutor(StepDefinition step) {
+        // Auto-route presigned URLs to HttpClient regardless of explicit setting
+        if (step.getActionRequest() != null &&
+            step.getActionRequest().getApi() != null &&
+            step.getActionRequest().getApi().isPresignedUrl()) {
+            log.debug("Step {} auto-routed to HttpClient (presignedUrl=true)", step.getId());
+            return httpClientExecutor;
+        }
+
+        ExecutorType type = step.getExecutorType() != null ? step.getExecutorType() : ExecutorType.WEBCLIENT;
+        return switch (type) {
+            case HTTPCLIENT -> httpClientExecutor;
+            case WEBCLIENT -> webClientExecutor;
+        };
     }
 
-    private StepResult buildStepResult(StepDefinition step, long stepStart, 
-                                        ActionResponse response, Map<String, Object> variables) {
+    // -------------------------------------------------------------------------
+    // Retry
+    // -------------------------------------------------------------------------
+
+    private Mono<ActionResponse> executeWithRetry(ActionExecutor executor, ActionRequest request,
+                                                   int retryCount, int retryDelayMs) {
+        return executor.execute(request)
+                .flatMap(response -> {
+                    if (!response.isSuccess() && retryCount > 0) {
+                        log.warn("Step failed, retrying... ({} attempts left)", retryCount);
+                        return Mono.delay(Duration.ofMillis(Math.max(retryDelayMs, 0)))
+                                .flatMap(tick -> executeWithRetry(executor, request,
+                                        retryCount - 1, retryDelayMs));
+                    }
+                    return Mono.just(response);
+                });
+    }
+
+    // -------------------------------------------------------------------------
+    // Step result building
+    // -------------------------------------------------------------------------
+
+    private StepResult buildStepResult(StepDefinition step, long stepStart, ActionResponse response) {
         Map<String, Object> extractedVars = new HashMap<>();
 
         if (response.isSuccess() && step.getExtract() != null && response.getRawResponse() != null) {
@@ -165,13 +236,14 @@ public class WorkflowExecutorService {
                     Object value = extractValue(extraction, response);
                     if (value != null) {
                         extractedVars.put(extraction.getName(), value);
-                        log.debug("Extracted variable {}: {}", extraction.getName(), 
-                            value.toString().length() > 100 ? value.toString().substring(0, 100) + "..." : value);
+                        String preview = value.toString();
+                        log.debug("Extracted [{}] = {}", extraction.getName(),
+                                preview.length() > 100 ? preview.substring(0, 100) + "..." : preview);
                     } else if (extraction.getDefaultValue() != null) {
                         extractedVars.put(extraction.getName(), extraction.getDefaultValue());
                     }
                 } catch (Exception e) {
-                    log.warn("Failed to extract variable {}: {}", extraction.getName(), e.getMessage());
+                    log.warn("Failed to extract [{}]: {}", extraction.getName(), e.getMessage());
                     if (extraction.getDefaultValue() != null) {
                         extractedVars.put(extraction.getName(), extraction.getDefaultValue());
                     }
@@ -179,45 +251,41 @@ public class WorkflowExecutorService {
             }
         }
 
-        Integer statusCode = null;
-        if (response.getRawResponse() != null) {
-            statusCode = response.getRawResponse().getStatus();
-        }
-
         return StepResult.builder()
-            .stepId(step.getId())
-            .stepName(step.getName())
-            .success(response.isSuccess())
-            .statusCode(statusCode)
-            .durationMs(System.currentTimeMillis() - stepStart)
-            .extractedVariables(extractedVars)
-            .error(response.getError() != null ? response.getError().getMessage() : null)
-            .rawResponse(response.getRawResponse())
-            .build();
+                .stepId(step.getId())
+                .stepName(step.getName())
+                .success(response.isSuccess())
+                .skipped(false)
+                .statusCode(response.getRawResponse() != null ? response.getRawResponse().getStatus() : null)
+                .durationMs(System.currentTimeMillis() - stepStart)
+                .extractedVariables(extractedVars.isEmpty() ? null : extractedVars)
+                .error(response.getError() != null ? response.getError().getMessage() : null)
+                .rawResponse(response.getRawResponse())
+                .build();
     }
+
+    // -------------------------------------------------------------------------
+    // Variable extraction
+    // -------------------------------------------------------------------------
 
     private Object extractValue(StepDefinition.VariableExtraction extraction, ActionResponse response) {
         if (StringUtils.hasText(extraction.getJsonPath())) {
-            Object body = response.getRawResponse().getBody();
+            ResponseBody body = response.getRawResponse().getBody();
             if (body != null) {
-                Object jsonContent = null;
-                if (body instanceof com.novaflow.action.dto.response.ResponseBody responseBody) {
-                    jsonContent = responseBody.getJson();
-                    if (jsonContent == null && responseBody.getText() != null) {
-                        try {
-                            jsonContent = objectMapper.readValue(responseBody.getText(), Object.class);
-                        } catch (Exception e) {
-                            return null;
-                        }
+                Object jsonContent = body.getJson();
+                if (jsonContent == null && StringUtils.hasText(body.getText())) {
+                    try {
+                        jsonContent = objectMapper.readValue(body.getText(), Object.class);
+                    } catch (Exception e) {
+                        return null;
                     }
                 }
                 if (jsonContent != null) {
-                    String jsonString;
                     try {
-                        jsonString = objectMapper.writeValueAsString(jsonContent);
+                        String jsonString = objectMapper.writeValueAsString(jsonContent);
                         return JsonPath.read(jsonString, extraction.getJsonPath());
                     } catch (Exception e) {
-                        log.warn("JSONPath extraction failed: {}", e.getMessage());
+                        log.warn("JSONPath [{}] failed: {}", extraction.getJsonPath(), e.getMessage());
                         return null;
                     }
                 }
@@ -227,54 +295,80 @@ public class WorkflowExecutorService {
         if (StringUtils.hasText(extraction.getHeader())) {
             Map<String, String> headers = response.getRawResponse().getHeaders();
             if (headers != null) {
-                return headers.get(extraction.getHeader());
+                // Check both original and lowercase (HttpClient returns lowercase)
+                String val = headers.get(extraction.getHeader());
+                return val != null ? val : headers.get(extraction.getHeader().toLowerCase());
             }
+        }
+
+        if (StringUtils.hasText(extraction.getStatusCode())) {
+            return response.getRawResponse().getStatus();
         }
 
         return null;
     }
 
+    // -------------------------------------------------------------------------
+    // Variable resolution
+    // -------------------------------------------------------------------------
+
     private String resolveVariables(String template, Map<String, Object> variables) {
-        if (template == null || !template.contains("${")) {
-            return template;
-        }
+        if (template == null || !template.contains("${")) return template;
 
         StringBuffer result = new StringBuffer();
         Matcher matcher = VARIABLE_PATTERN.matcher(template);
 
         while (matcher.find()) {
             String varName = matcher.group(1);
-            Object value = variables.get(varName);
+            Object value = resolveNestedVariable(varName, variables);
             String replacement = value != null ? escapeJsonValue(value.toString()) : "";
             matcher.appendReplacement(result, Matcher.quoteReplacement(replacement));
         }
         matcher.appendTail(result);
-
         return result.toString();
+    }
+
+    private Object resolveNestedVariable(String varName, Map<String, Object> variables) {
+        // Support dot notation: ${step1.token} looks up variables["step1"]["token"]
+        if (!varName.contains(".")) {
+            return variables.get(varName);
+        }
+
+        String[] parts = varName.split("\\.", 2);
+        Object parent = variables.get(parts[0]);
+
+        if (parent instanceof Map<?, ?> map) {
+            return map.get(parts[1]);
+        }
+
+        // Fallback: try the full key as-is
+        return variables.get(varName);
     }
 
     private String escapeJsonValue(String value) {
         return value.replace("\\", "\\\\")
-                   .replace("\"", "\\\"")
-                   .replace("\n", "\\n")
-                   .replace("\r", "\\r")
-                   .replace("\t", "\\t");
+                    .replace("\"", "\\\"")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t");
     }
 
     private boolean evaluateCondition(String condition) {
-        if (!StringUtils.hasText(condition)) {
-            return false;
-        }
-        String trimmed = condition.trim().toLowerCase();
-        return "true".equals(trimmed) || "1".equals(trimmed);
+        if (!StringUtils.hasText(condition)) return false;
+        String t = condition.trim().toLowerCase();
+        return "true".equals(t) || "1".equals(t);
     }
+
+    // -------------------------------------------------------------------------
+    // Result builders
+    // -------------------------------------------------------------------------
 
     private WorkflowResult buildResult(WorkflowDefinition workflow, String correlationId,
                                         long startTime, boolean success,
                                         Map<String, Object> variables, List<StepResult> stepResults) {
         String failedStep = null;
         int completedSteps = 0;
-        
+
         for (StepResult sr : stepResults) {
             if (sr.isSuccess() || sr.isSkipped()) {
                 completedSteps++;
@@ -285,34 +379,39 @@ public class WorkflowExecutorService {
         }
 
         return WorkflowResult.builder()
-            .workflowId(workflow.getId())
-            .workflowName(workflow.getName())
-            .correlationId(correlationId)
-            .timestamp(Instant.now())
-            .success(success && failedStep == null)
-            .totalSteps(workflow.getSteps().size())
-            .completedSteps(completedSteps)
-            .failedStep(failedStep)
-            .durationMs(System.currentTimeMillis() - startTime)
-            .variables(variables)
-            .stepResults(stepResults)
-            .build();
+                .workflowId(workflow.getId())
+                .workflowName(workflow.getName())
+                .correlationId(correlationId)
+                .timestamp(Instant.now())
+                .success(success && failedStep == null)
+                .totalSteps(workflow.getSteps().size())
+                .completedSteps(completedSteps)
+                .failedStep(failedStep)
+                .durationMs(System.currentTimeMillis() - startTime)
+                .variables(variables)
+                .stepResults(stepResults)
+                .build();
     }
 
     private WorkflowResult buildErrorResult(WorkflowDefinition workflow, String correlationId,
                                              long startTime, String error,
-                                             List<StepResult> stepResults, Map<String, Object> variables) {
+                                             List<StepResult> stepResults,
+                                             Map<String, Object> variables) {
         return WorkflowResult.builder()
-            .workflowId(workflow.getId())
-            .workflowName(workflow.getName())
-            .correlationId(correlationId)
-            .timestamp(Instant.now())
-            .success(false)
-            .totalSteps(workflow.getSteps().size())
-            .completedSteps(stepResults.size())
-            .durationMs(System.currentTimeMillis() - startTime)
-            .variables(variables)
-            .stepResults(stepResults)
-            .error(error)
-            .build();
- 
+                .workflowId(workflow.getId())
+                .workflowName(workflow.getName())
+                .correlationId(correlationId)
+                .timestamp(Instant.now())
+                .success(false)
+                .totalSteps(workflow.getSteps().size())
+                .completedSteps(stepResults.size())
+                .durationMs(System.currentTimeMillis() - startTime)
+                .variables(variables)
+                .stepResults(stepResults)
+                .error(error)
+                .build();
+    }
+}
+
+
+
