@@ -1,0 +1,6 @@
+@Service("webClientExecutor")
+public class WebClientActionExecutorService implements ActionExecutor {
+    // Everything exactly as your original ActionExecutorService
+    // Just rename the class and add @Service("webClientExecutor")
+    // implements ActionExecutor with @Override on execute()
+}
