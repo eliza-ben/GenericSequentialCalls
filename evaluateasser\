@@ -1,3 +1,23 @@
+
+private String resolveVariablesRaw(String template, Map<String, Object> variables) {
+    if (template == null || !template.contains("${")) return template;
+
+    StringBuffer result = new StringBuffer();
+    Matcher matcher = VARIABLE_PATTERN.matcher(template);
+
+    while (matcher.find()) {
+        String varName = matcher.group(1);
+        Object value = resolveNestedVariable(varName, variables);
+        String raw = value != null ? String.valueOf(value) : "";
+        matcher.appendReplacement(result, Matcher.quoteReplacement(raw));
+    }
+
+    matcher.appendTail(result);
+    return result.toString();
+}
+
+
+
 private boolean evaluateAssertions(StepDefinition step, Map<String, Object> variables,
                                     ActionResponse response) {
     if (step.getAssert() == null || step.getAssert().isEmpty()) {
