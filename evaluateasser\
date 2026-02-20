@@ -1,0 +1,159 @@
+private boolean evaluateAssertions(StepDefinition step, Map<String, Object> variables,
+                                    ActionResponse response) {
+    if (step.getAssert() == null || step.getAssert().isEmpty()) {
+        return true;
+    }
+
+    for (StepDefinition.Assertion assertion : step.getAssert()) {
+        boolean passed = switch (assertion.getType().toLowerCase()) {
+
+            // Existing
+            case "equals_ignore_case" -> {
+                String left  = resolveVariablesRaw(assertion.getLeft(), variables);
+                String right = resolveVariablesRaw(assertion.getRight(), variables);
+                yield left != null && left.equalsIgnoreCase(right);
+            }
+            case "equals" -> {
+                String left  = resolveVariablesRaw(assertion.getLeft(), variables);
+                String right = resolveVariablesRaw(assertion.getRight(), variables);
+                yield left != null && left.equals(right);
+            }
+            case "not_blank" -> {
+                String value = resolveVariablesRaw(assertion.getValue(), variables);
+                yield StringUtils.hasText(value);
+            }
+            case "not_null" -> {
+                String value = resolveVariablesRaw(assertion.getValue(), variables);
+                yield value != null;
+            }
+
+            // HTTP status checks
+            case "status_equals" -> {
+                int expected = Integer.parseInt(assertion.getValue());
+                yield response.getRawResponse() != null &&
+                      response.getRawResponse().getStatus() == expected;
+            }
+            case "status_in" -> {
+                // value: "200,201,204"
+                if (response.getRawResponse() == null) yield false;
+                int actual = response.getRawResponse().getStatus();
+                yield Arrays.stream(assertion.getValue().split(","))
+                        .map(String::trim)
+                        .map(Integer::parseInt)
+                        .anyMatch(s -> s == actual);
+            }
+            case "status_2xx" -> {
+                yield response.getRawResponse() != null &&
+                      response.getRawResponse().getStatus() >= 200 &&
+                      response.getRawResponse().getStatus() < 300;
+            }
+
+            // JSON response body checks
+            case "json_path_equals" -> {
+                Object actual = readJsonPath(response, assertion.getJsonPath());
+                String expected = resolveVariablesRaw(assertion.getValue(), variables);
+                yield actual != null && actual.toString().equals(expected);
+            }
+            case "json_path_equals_ignore_case" -> {
+                Object actual = readJsonPath(response, assertion.getJsonPath());
+                String expected = resolveVariablesRaw(assertion.getValue(), variables);
+                yield actual != null && actual.toString().equalsIgnoreCase(expected);
+            }
+            case "json_path_not_blank" -> {
+                Object actual = readJsonPath(response, assertion.getJsonPath());
+                yield actual != null && StringUtils.hasText(actual.toString());
+            }
+            case "json_path_not_null" -> {
+                yield readJsonPath(response, assertion.getJsonPath()) != null;
+            }
+            case "json_path_contains" -> {
+                Object actual = readJsonPath(response, assertion.getJsonPath());
+                String expected = resolveVariablesRaw(assertion.getValue(), variables);
+                yield actual != null && actual.toString().contains(expected);
+            }
+            case "json_path_gt" -> {
+                Object actual = readJsonPath(response, assertion.getJsonPath());
+                yield actual != null &&
+                      Double.parseDouble(actual.toString()) >
+                      Double.parseDouble(assertion.getValue());
+            }
+            case "json_path_gte" -> {
+                Object actual = readJsonPath(response, assertion.getJsonPath());
+                yield actual != null &&
+                      Double.parseDouble(actual.toString()) >=
+                      Double.parseDouble(assertion.getValue());
+            }
+
+            // Header checks
+            case "header_equals" -> {
+                String actual = getHeader(response, assertion.getHeader());
+                String expected = resolveVariablesRaw(assertion.getValue(), variables);
+                yield actual != null && actual.equals(expected);
+            }
+            case "header_not_blank" -> {
+                String actual = getHeader(response, assertion.getHeader());
+                yield StringUtils.hasText(actual);
+            }
+            case "header_contains" -> {
+                String actual = getHeader(response, assertion.getHeader());
+                String expected = resolveVariablesRaw(assertion.getValue(), variables);
+                yield actual != null && actual.contains(expected);
+            }
+
+            default -> {
+                log.warn("Unknown assertion type: {}", assertion.getType());
+                yield true;
+            }
+        };
+
+        if (!passed) {
+            log.error("Assertion failed — step={} type={} jsonPath={} header={} left={} right={} value={} actualStatus={}",
+                    step.getId(),
+                    assertion.getType(),
+                    assertion.getJsonPath(),
+                    assertion.getHeader(),
+                    assertion.getLeft(),
+                    assertion.getRight(),
+                    assertion.getValue(),
+                    response.getRawResponse() != null ? response.getRawResponse().getStatus() : "N/A");
+            return false;
+        }
+    }
+    return true;
+}
+
+// Helper — read jsonpath directly from response body
+private Object readJsonPath(ActionResponse response, String jsonPath) {
+    if (!StringUtils.hasText(jsonPath) || response.getRawResponse() == null) return null;
+    ResponseBody body = response.getRawResponse().getBody();
+    if (body == null) return null;
+
+    try {
+        Object jsonContent = body.getJson();
+        if (jsonContent == null && StringUtils.hasText(body.getText())) {
+            jsonContent = objectMapper.readValue(body.getText(), Object.class);
+        }
+        if (jsonContent == null) return null;
+
+        String jsonString = objectMapper.writeValueAsString(jsonContent);
+        Object result = JsonPath.read(jsonString, jsonPath);
+
+        // Unwrap single element wildcard result
+        if (result instanceof List<?> list && list.size() == 1) {
+            return list.get(0);
+        }
+        return result;
+    } catch (Exception e) {
+        log.warn("readJsonPath failed [{}]: {}", jsonPath, e.getMessage());
+        return null;
+    }
+}
+
+// Helper — get header case-insensitive
+private String getHeader(ActionResponse response, String headerName) {
+    if (!StringUtils.hasText(headerName) || response.getRawResponse() == null) return null;
+    Map<String, String> headers = response.getRawResponse().getHeaders();
+    if (headers == null) return null;
+    String val = headers.get(headerName);
+    return val != null ? val : headers.get(headerName.toLowerCase());
+}
