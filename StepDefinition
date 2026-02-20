@@ -1,5 +1,0 @@
-private ExecutorType executorType;   // WEBCLIENT or HTTPCLIENT
-private String statusCode;           // field name for status code extraction target
-
-public enum ExecutorType { WEBCLIENT, HTTPCLIENT }
-public enum OnErrorAction { FAIL, CONTINUE, SKIP_REMAINING }
